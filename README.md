@@ -17,6 +17,9 @@ Screenshots are returned as real images in the tool result (when the model route
 input) **and** written to a file, so the model sees the rendered UI while a human can open the exact
 PNG afterwards.
 
+A real render, captured by the tool itself — [astro.build](https://astro.build/) at 1280×800:
+
+![astro.build rendered in headless Chrome by the chrome tool](demo/astro-home.png)
 
 ## Tool reference
 
