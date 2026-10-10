@@ -1,0 +1,41 @@
+{
+  "name": "@local/dsh-chrome-browser",
+  "version": "1.0.3",
+  "private": true,
+  "description": "Model-facing Google Chrome tool: drives the installed Chrome over the DevTools protocol so front-end work can navigate, screenshot, inspect, and interact without per-call shell approval.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Aurora-Lucas/dsh-chrome-browser.git"
+  },
+  "homepage": "https://github.com/Aurora-Lucas/dsh-chrome-browser#readme",
+  "bugs": {
+    "url": "https://github.com/Aurora-Lucas/dsh-chrome-browser/issues"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "plugin",
+    "chrome",
+    "cdp",
+    "headless",
+    "browser-automation"
+  ],
+  "type": "module",
+  "main": "./chrome-browser.js",
+  "exports": {
+    ".": "./chrome-browser.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "chrome-browser.js",
+    "browser.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "license": "MIT"
+}

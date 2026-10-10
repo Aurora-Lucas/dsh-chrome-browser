@@ -1,0 +1,9 @@
+# Dependencies and build output
+node_modules/
+
+# Packed bundle artifacts (regenerate with `npm pack`)
+*.tgz
+
+# Test and run output
+.tmp/
+test/.tmp/

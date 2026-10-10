@@ -1,0 +1,22 @@
+# chrome-browser bundle patch: inserts the model-facing `chrome` tool row into
+# the profile roster. The plugin needs no installed dependencies: it imports
+# nothing but its own sibling module and Node.js built-ins.
+#
+# The row names this package directly, so the row resolves to the installed
+# copy inside the profile. Install this bundle from a packed tarball rather than
+# from the source directory: a directory install links the workspace, and this
+# Host only imports plugins from its own permitted roots (the profile and the
+# dsh installation), so a link pointing outside them never activates.
+- insert:
+    - id: chrome-browser
+      name: '@local/dsh-chrome-browser'
+      config:
+        # Google Chrome installed from the attached .deb.
+        chromePath: /usr/bin/google-chrome
+        # Chrome must skip its own sandbox because the Host runs as root.
+        noSandbox: true
+        headless: true
+        defaultWidth: 1280
+        defaultHeight: 900
+        maxOutputChars: 100000
+        navigationTimeoutMs: 30000
