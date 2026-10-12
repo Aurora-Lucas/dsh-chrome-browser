@@ -1,8 +1,8 @@
 /**
  * Standalone smoke test for the Chrome engine (no DSH imports).
- * Run: node .tmp/engine-test.mjs
+ * Run from the repository root: node test/engine.test.mjs
  */
-import { ChromeBrowser } from '../browser.js';
+import { ChromeBrowser, chromeCandidates, resolveChromePath } from '../browser.js';
 
 const html = `<!doctype html><html><head><title>Engine Test</title></head><body>
 <h1 id="heading">Hello Chrome</h1>
@@ -23,6 +23,34 @@ const check = (name, ok, detail = '') => {
   results.push(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ` — ${detail}` : ''}`);
   if (!ok) process.exitCode = 1;
 };
+
+// Executable resolution is pure, so the Windows branch is verifiable from Linux.
+const windowsEnv = {
+  ProgramFiles: 'C:\\Program Files',
+  'ProgramFiles(x86)': 'C:\\Program Files (x86)',
+  LOCALAPPDATA: 'C:\\Users\\tester\\AppData\\Local',
+};
+const winCandidates = chromeCandidates('win32', windowsEnv);
+check('win: Program Files chrome.exe probed', winCandidates.includes('C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'));
+check('win: x86 chrome.exe probed', winCandidates.includes('C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe'));
+check('win: LOCALAPPDATA chrome.exe probed', winCandidates.includes('C:\\Users\\tester\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe'));
+check('win: Edge is the last resort', winCandidates.some((candidate) => candidate.endsWith('\\msedge.exe')));
+check('win: no POSIX paths in the Windows list', !winCandidates.some((candidate) => candidate.startsWith('/')));
+const posixCandidates = chromeCandidates('linux', {});
+check('linux: /usr/bin/google-chrome probed', posixCandidates.includes('/usr/bin/google-chrome'));
+check('linux: no .exe in the Linux list', !posixCandidates.some((candidate) => candidate.endsWith('.exe')));
+check('darwin: app bundle probed', chromeCandidates('darwin', {}).includes('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'));
+const missingConfigured = (() => {
+  try {
+    resolveChromePath('/definitely/missing/chrome', 'linux', {});
+    return 'no error was raised';
+  } catch (error) {
+    return error.message;
+  }
+})();
+check('configured-but-missing path is reported', /not found at the configured path/u.test(missingConfigured), missingConfigured.split('\n')[0]);
+check('DSH_CHROME_PATH override resolves', resolveChromePath('', 'linux', { DSH_CHROME_PATH: process.execPath }) === process.execPath);
+check('auto-detection finds this host browser', resolveChromePath('', process.platform, process.env).length > 0);
 
 try {
   const page = await browser.openPage(url);

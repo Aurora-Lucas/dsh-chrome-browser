@@ -15,6 +15,8 @@
  * @module dsh-chrome-browser
  */
 
+import path from 'node:path';
+
 import { ChromeBrowser, boundText } from './browser.js';
 
 /** Cordis plugin name used by loader diagnostics. */
@@ -23,11 +25,16 @@ export const name = 'chrome-browser';
 /** Services required by the Chrome tool. */
 export const inject = ['tools'];
 
-/** Default configuration; a row may override any field through `config`. */
+/**
+ * Default configuration; a row may override any field through `config`.
+ * `noSandbox` is a POSIX convention (Chrome refuses to run as root otherwise) and
+ * is off on Windows, where the flag is unnecessary and only weakens the sandbox.
+ */
 const FALLBACK_SETTINGS = {
   chromePath: '',
   headless: true,
-  noSandbox: true,
+  noSandbox: process.platform !== 'win32',
+  userDataDir: '',
   defaultWidth: 1280,
   defaultHeight: 800,
   maxOutputChars: 100000,
@@ -229,8 +236,9 @@ function registerChromeTool(ctx, config) {
     const value = settings[key];
     if (!Number.isInteger(value) || value < 1) throw new Error(`chrome-browser: config ${key} must be a positive integer`);
   }
-  if (typeof settings.chromePath !== 'string' || typeof settings.artifactDir !== 'string') {
-    throw new Error('chrome-browser: config chromePath and artifactDir must be strings');
+  if (typeof settings.chromePath !== 'string' || typeof settings.artifactDir !== 'string'
+    || typeof settings.userDataDir !== 'string') {
+    throw new Error('chrome-browser: config chromePath, userDataDir, and artifactDir must be strings');
   }
   const browser = new ChromeBrowser({
     chromePath: settings.chromePath,
@@ -240,6 +248,7 @@ function registerChromeTool(ctx, config) {
     height: settings.defaultHeight,
     navigationTimeoutMs: settings.navigationTimeoutMs,
     ...(settings.artifactDir.trim().length > 0 ? { artifactDir: settings.artifactDir } : {}),
+    ...(settings.userDataDir.trim().length > 0 ? { userDataDir: settings.userDataDir } : {}),
   });
 
   // Keep a scoped context for the optional attachment service so screenshots can
@@ -385,7 +394,7 @@ function registerChromeTool(ctx, config) {
               ? `element ${args.selector}`
               : args.fullPage === true ? 'full page' : 'viewport';
             const size = dimensions === undefined ? '' : `, ${dimensions.width}x${dimensions.height} px`;
-            const image = await attachPng(exec, data, filePath.split('/').pop());
+            const image = await attachPng(exec, data, path.basename(filePath));
             const note = image === undefined
               ? ' The image could not be attached to this result, so inspect the saved file instead.'
               : '';
@@ -526,12 +535,13 @@ function registerChromeTool(ctx, config) {
           }
           case 'stop': {
             if (!browser.running) return { text: 'Chrome was not running' };
-            const cleaned = await browser.dispose();
-            return {
-              text: cleaned
-                ? 'Chrome stopped and its temporary profile was removed'
-                : 'Chrome stopped; a temporary profile directory remains under the system temp directory',
-            };
+            const outcome = await browser.dispose();
+            const detail = outcome === 'removed'
+              ? 'its temporary profile was removed'
+              : outcome === 'kept'
+                ? 'the configured profile directory was left in place'
+                : 'a temporary profile directory remains under the system temp directory';
+            return { text: `Chrome stopped; ${detail}` };
           }
           default:
             throw new Error(`unknown action ${JSON.stringify(action)}; expected one of: ${ACTIONS.join(', ')}`);

@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-chrome-browser",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "private": true,
   "description": "Model-facing Google Chrome tool: drives the installed Chrome over the DevTools protocol so front-end work can navigate, screenshot, inspect, and interact without per-call shell approval.",
   "repository": {

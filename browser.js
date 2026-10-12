@@ -15,18 +15,43 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-/** Executables probed when no explicit Chrome path is configured. */
-const CHROME_CANDIDATES = [
-  '/usr/bin/google-chrome',
-  '/usr/bin/google-chrome-stable',
-  '/usr/bin/google-chrome-beta',
-  '/usr/bin/chromium',
-  '/usr/bin/chromium-browser',
-  '/opt/google/chrome/chrome',
-  '/snap/bin/chromium',
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-];
+/**
+ * Well-known browser locations for one platform; every entry is probed with existsSync.
+ * Injected platform/env keep every branch testable from any OS.
+ */
+export function chromeCandidates(platform = process.platform, env = process.env) {
+  if (platform === 'win32') {
+    const programFiles = env.ProgramFiles ?? 'C:\\Program Files';
+    const programFilesX86 = env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)';
+    return [
+      `${programFiles}\\Google\\Chrome\\Application\\chrome.exe`,
+      `${programFilesX86}\\Google\\Chrome\\Application\\chrome.exe`,
+      ...(env.LOCALAPPDATA === undefined ? [] : [`${env.LOCALAPPDATA}\\Google\\Chrome\\Application\\chrome.exe`]),
+      // Chromium-based Edge ships with Windows and speaks the same protocol, so it
+      // is the last resort instead of failing to start at all.
+      `${programFilesX86}\\Microsoft\\Edge\\Application\\msedge.exe`,
+      `${programFiles}\\Microsoft\\Edge\\Application\\msedge.exe`,
+    ];
+  }
+  if (platform === 'darwin') {
+    const home = env.HOME ?? env.USERPROFILE ?? '';
+    return [
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/Applications/Chromium.app/Contents/MacOS/Chromium',
+      ...(home.length === 0 ? [] : [`${home}/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`]),
+    ];
+  }
+  return [
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/google-chrome-beta',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/opt/google/chrome/chrome',
+    '/snap/bin/chromium',
+    '/var/lib/flatpak/exports/bin/com.google.Chrome',
+  ];
+}
 
 /** Keys `press` can synthesize, with their CDP key metadata. */
 const KEY_SPECS = {
@@ -47,18 +72,19 @@ const KEY_SPECS = {
 };
 
 /** Resolve the Chrome executable from config, env, or well-known locations. */
-export function resolveChromePath(configured) {
-  const explicit = (configured && configured.trim()) || process.env.DSH_CHROME_PATH || '';
+export function resolveChromePath(configured, platform = process.platform, env = process.env) {
+  const explicit = (configured && configured.trim()) || env.DSH_CHROME_PATH || '';
   if (explicit.trim().length > 0) {
     if (!existsSync(explicit)) throw new Error(`Chrome executable not found at the configured path: ${explicit}`);
     return explicit;
   }
-  for (const candidate of CHROME_CANDIDATES) {
+  const candidates = chromeCandidates(platform, env);
+  for (const candidate of candidates) {
     if (existsSync(candidate)) return candidate;
   }
   throw new Error(
-    'No Google Chrome or Chromium executable found. Install Chrome or set the plugin config `chromePath` '
-    + '(or the DSH_CHROME_PATH environment variable) to the browser executable.',
+    'No Google Chrome or Chromium executable found. Install Chrome, or set the plugin config `chromePath` '
+    + `(or the DSH_CHROME_PATH environment variable) to the browser executable. Probed: ${candidates.join(', ')}`,
   );
 }
 
@@ -80,6 +106,41 @@ function waitForExit(child, timeoutMs) {
   return new Promise((resolve) => {
     const timer = setTimeout(() => { resolve(false); }, timeoutMs);
     child.once('exit', () => { clearTimeout(timer); resolve(true); });
+  });
+}
+
+/**
+ * Terminate a process tree. Windows has no POSIX process groups and `child.kill()`
+ * reaches only the browser process, so renderers and the crashpad handler can
+ * survive as orphans; `taskkill /T /F` covers the tree.
+ */
+function killProcessTree(child) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    const fallback = () => {
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        // The process is already gone.
+      }
+      done();
+    };
+    if (child.pid === undefined) {
+      done();
+      return;
+    }
+    try {
+      const killer = spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+      killer.once('exit', done);
+      killer.once('error', fallback);
+    } catch {
+      fallback();
+    }
   });
 }
 
@@ -563,6 +624,7 @@ export class ChromeBrowser {
       chromePath: options.chromePath ?? '',
       headless: options.headless !== false,
       noSandbox: options.noSandbox !== false,
+      userDataDir: options.userDataDir ?? '',
       settleMs: options.settleMs ?? 150,
       navigationTimeoutMs: options.navigationTimeoutMs ?? 30000,
       actionTimeoutMs: options.actionTimeoutMs ?? 20000,
@@ -581,6 +643,7 @@ export class ChromeBrowser {
     this.process = undefined;
     this.connection = undefined;
     this.userDataDir = undefined;
+    this.ownsUserDataDir = false;
     this.stderrTail = [];
     this.requestUrls = new Map();
     this.pages = new Map();
@@ -608,7 +671,18 @@ export class ChromeBrowser {
 
   async start() {
     const chromePath = resolveChromePath(this.options.chromePath);
-    this.userDataDir = await mkdtemp(path.join(tmpdir(), 'dsh-chrome-profile-'));
+    const configuredProfile = this.options.userDataDir.trim();
+    if (configuredProfile.length > 0) {
+      // A caller-supplied profile survives `stop`; it exists so deployments whose
+      // temp path is unusable for Chrome (for example a non-ASCII %TEMP% on
+      // Windows) can point at a plain ASCII directory.
+      await mkdir(configuredProfile, { recursive: true });
+      this.userDataDir = configuredProfile;
+      this.ownsUserDataDir = false;
+    } else {
+      this.userDataDir = await mkdtemp(path.join(tmpdir(), 'dsh-chrome-profile-'));
+      this.ownsUserDataDir = true;
+    }
     const args = [];
     if (this.options.headless) args.push('--headless');
     if (this.options.noSandbox) args.push('--no-sandbox', '--disable-setuid-sandbox');
@@ -629,7 +703,8 @@ export class ChromeBrowser {
       `--user-data-dir=${this.userDataDir}`,
       'about:blank',
     );
-    const child = spawn(chromePath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    // windowsHide keeps a console window from flashing on Windows consoles.
+    const child = spawn(chromePath, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     this.process = child;
     child.stdout.on('data', () => {});
     const endpoint = await new Promise((resolve, reject) => {
@@ -753,8 +828,9 @@ export class ChromeBrowser {
   }
 
   /**
-   * Terminate Chrome and remove its temporary profile.
-   * @returns Whether the temporary profile directory is gone afterwards.
+   * Terminate Chrome and remove the profile directory this manager created.
+   * A caller-supplied `userDataDir` is left in place.
+   * @returns `'removed'`, `'kept'` (caller-owned profile, untouched), or `'left'` (removal failed).
    */
   async dispose() {
     for (const page of this.pages.values()) page.dispose();
@@ -768,26 +844,34 @@ export class ChromeBrowser {
     const child = this.process;
     this.process = undefined;
     if (child !== undefined && child.exitCode === null) {
-      child.kill('SIGTERM');
-      // Wait for the exit before touching the profile: a dying Chrome (including
-      // its crashpad handler) can recreate files while the removal runs.
-      if (!(await waitForExit(child, 2000))) {
-        child.kill('SIGKILL');
+      if (process.platform === 'win32') {
+        await killProcessTree(child);
         await waitForExit(child, 2000);
+      } else {
+        child.kill('SIGTERM');
+        // Wait for the exit before touching the profile: a dying Chrome (including
+        // its crashpad handler) can recreate files while the removal runs.
+        if (!(await waitForExit(child, 2000))) {
+          child.kill('SIGKILL');
+          await waitForExit(child, 2000);
+        }
       }
     }
     const dir = this.userDataDir;
+    const owned = this.ownsUserDataDir;
     this.userDataDir = undefined;
-    if (dir === undefined) return true;
+    this.ownsUserDataDir = false;
+    if (dir === undefined) return 'removed';
+    if (!owned) return 'kept';
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
         await rm(dir, { recursive: true, force: true });
-        return true;
+        return 'removed';
       } catch {
         await delay(150);
       }
     }
-    return false;
+    return 'left';
   }
 
   /** Whether Chrome is currently running under this manager. */

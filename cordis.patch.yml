@@ -11,10 +11,14 @@
     - id: chrome-browser
       name: '@local/dsh-chrome-browser'
       config:
-        # Google Chrome installed from the attached .deb.
-        chromePath: /usr/bin/google-chrome
-        # Chrome must skip its own sandbox because the Host runs as root.
-        noSandbox: true
+        # Leave empty so the plugin auto-detects the browser on any OS
+        # (Linux /usr/bin, macOS /Applications, Windows Program Files and
+        # LOCALAPPDATA, then Chromium-based Edge). Pin it, or export
+        # DSH_CHROME_PATH, only for an unusual installation.
+        chromePath: ''
+        # `noSandbox` is deliberately not set here: the plugin defaults it to on
+        # for POSIX (Chrome refuses to run as root without it) and off on
+        # Windows, where the flag only weakens the sandbox.
         headless: true
         defaultWidth: 1280
         defaultHeight: 900
